@@ -18,6 +18,7 @@ const START_TIME = Date.now();
 const DATABASE_FILE = './database.json';
 const VIP_FILE = './vip.json';
 const STOCK_FILE = './stock_notify.json';
+const CONSOLE_FILE = './console.json';
 
 const itemEmojis = {
   'Watering Can': '🚿', 'Trowel': '🛠️', 'Basic Sprinkler': '💧',
@@ -66,6 +67,14 @@ const sendMessage = async (id, msg) => {
   }
 };
 
+const getConsoleSetting = async () => {
+  const data = await getJson(CONSOLE_FILE, {});
+  return data.enabled === true;
+};
+const setConsoleSetting = async (value) => {
+  await saveJson(CONSOLE_FILE, { enabled: value });
+};
+
 const sendWelcomeIfNew = async (id) => {
   const db = await getJson(DATABASE_FILE);
   if (!db[id]) {
@@ -102,13 +111,25 @@ const handleCommand = async (id, text) => {
 
   if (command === '/help') {
     let msg = `🆘 Commands:\n/vip -list\n/vip #1,#2\n/vip -show\n/vip -delete #1,#2\n/vip -reset\n/stock -on\n/stock -off\n/stock`;
-    if (role === 'Admin') msg += `\n\n👑 Admin:\n/uptime`;
+    if (role === 'Admin') msg += `\n\n👑 Admin:\n/uptime\n/console -on\n/console -off`;
     return sendMessage(id, { text: msg });
   }
 
   if (command === '/uptime') {
     if (role !== 'Admin') return sendMessage(id, { text: '⛔ Admins only.' });
     return sendMessage(id, { text: `⏱️ Bot uptime: ${formatUptime()}` });
+  }
+
+  if (command === '/console -on') {
+    if (role !== 'Admin') return sendMessage(id, { text: '⛔ Admins only.' });
+    await setConsoleSetting(true);
+    return sendMessage(id, { text: '📢 Console logging is ON.' });
+  }
+
+  if (command === '/console -off') {
+    if (role !== 'Admin') return sendMessage(id, { text: '⛔ Admins only.' });
+    await setConsoleSetting(false);
+    return sendMessage(id, { text: '🔇 Console logging is OFF.' });
   }
 
   if (command === '/vip -list') {
@@ -134,7 +155,6 @@ const handleCommand = async (id, text) => {
     return sendMessage(id, { text: '🗑️ VIP cleared.' });
   }
 
-  // ✅ /vip -show — show selected VIP items with numbers
   if (command === '/vip -show') {
     const selected = vip[id];
     if (!selected || selected.length === 0) {
@@ -148,7 +168,6 @@ const handleCommand = async (id, text) => {
     return;
   }
 
-  // 🗑️ /vip -delete #1,#3 — delete specific selected VIPs
   if (command.startsWith('/vip -delete')) {
     const selected = vip[id];
     if (!selected || selected.length === 0) {
@@ -178,7 +197,23 @@ const handleCommand = async (id, text) => {
   if (command === '/stock -on') {
     notify[id] = true;
     await saveJson(STOCK_FILE, notify);
-    return sendMessage(id, { text: '✅ Stock updates enabled.' });
+    if (!lastStockDataRaw) return sendMessage(id, { text: '✅ Stock updates enabled.\n⏳ Waiting for stock data...' });
+
+    const s = lastStockDataRaw;
+    const sections = [
+      ['Gear', s.gear.items],
+      ['Seeds', s.seed.items],
+      ['Eggs', s.egg.items],
+      ['Honey', s.honey.items],
+      ['Cosmetics', s.cosmetics.items],
+    ];
+    const clean = sections.map(([t, l]) =>
+      `${t}\n${l.filter(i => i.quantity > 0).map(i => `- ${i.name}: x${formatQty(i.quantity)}`).join('\n')}`
+    ).join('\n\n');
+
+    return sendMessage(id, {
+      text: `✅ Stock updates enabled.\n\n📦 Current Stock\n\n${clean}\n\n📅 As of: ${getPHTime()}`
+    });
   }
 
   if (command === '/stock -off') {
@@ -218,6 +253,7 @@ const handleStockData = async (data) => {
 
   const time = getPHTime();
   const admins = Object.entries(db).filter(([_, u]) => u.role === 'Admin');
+  const consoleEnabled = await getConsoleSetting();
 
   let log = `📦 Stock Update @ ${time}\n`;
 
@@ -238,7 +274,9 @@ const handleStockData = async (data) => {
   const final = `🛠️ Gear:\n${gearMsg}\n\n🌱 Seeds:\n${seedMsg}\n📅 ${time}`;
 
   for (const id of Object.keys(notify)) await sendMessage(id, { text: final });
-  for (const [aid] of admins) await sendMessage(aid, { text: log });
+  if (consoleEnabled) {
+    for (const [aid] of admins) await sendMessage(aid, { text: log });
+  }
 };
 
 const connectWS = () => {
@@ -246,13 +284,16 @@ const connectWS = () => {
   ws.on('open', async () => {
     console.log(`[WS] Connected to ${WS_URL}`);
     const db = await getJson(DATABASE_FILE);
-    for (const [id, user] of Object.entries(db)) {
-      if (user.role === 'Admin') {
-        const now = new Date(new Date().toLocaleString('en-US', { timeZone: PH_TIMEZONE }));
-        const part = now.getHours() < 12 ? 'Morning' : now.getHours() < 18 ? 'Afternoon' : 'Evening';
-        await sendMessage(id, {
-          text: `🤖 Bot online at ${now.toLocaleTimeString()}, ${now.toLocaleDateString()} (${part})`
-        });
+    const consoleEnabled = await getConsoleSetting();
+    if (consoleEnabled) {
+      for (const [id, user] of Object.entries(db)) {
+        if (user.role === 'Admin') {
+          const now = new Date(new Date().toLocaleString('en-US', { timeZone: PH_TIMEZONE }));
+          const part = now.getHours() < 12 ? 'Morning' : now.getHours() < 18 ? 'Afternoon' : 'Evening';
+          await sendMessage(id, {
+            text: `🤖 Bot online at ${now.toLocaleTimeString()}, ${now.toLocaleDateString()} (${part})`
+          });
+        }
       }
     }
   });
