@@ -3,7 +3,6 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const fs = require('fs').promises;
-const path = require('path');
 const WebSocket = require('ws');
 
 const app = express();
@@ -44,8 +43,7 @@ const getJson = async (file, fallback = {}) => {
     return fallback;
   }
 };
-const saveJson = async (file, data) =>
-  await fs.writeFile(file, JSON.stringify(data, null, 2));
+const saveJson = async (file, data) => await fs.writeFile(file, JSON.stringify(data, null, 2));
 
 const getUserName = async (id) => {
   try {
@@ -62,18 +60,15 @@ const sendMessage = async (id, msg) => {
       recipient: { id },
       message: msg,
     });
+    return true;
   } catch (e) {
     console.error(`[BOT ➜ ${id}] ERROR: ${e.message}`);
+    return false;
   }
 };
 
-const getConsoleSetting = async () => {
-  const data = await getJson(CONSOLE_FILE, {});
-  return data.enabled === true;
-};
-const setConsoleSetting = async (value) => {
-  await saveJson(CONSOLE_FILE, { enabled: value });
-};
+const getConsoleSetting = async () => (await getJson(CONSOLE_FILE)).enabled === true;
+const setConsoleSetting = async (value) => await saveJson(CONSOLE_FILE, { enabled: value });
 
 const sendWelcomeIfNew = async (id) => {
   const db = await getJson(DATABASE_FILE);
@@ -85,9 +80,7 @@ const sendWelcomeIfNew = async (id) => {
       role: id === ADMIN_ID ? 'Admin' : 'Member',
     };
     await saveJson(DATABASE_FILE, db);
-    await sendMessage(id, {
-      text: `👋 Hello ${name}!\nWelcome to Grow A Garden Bot 🌱\nI’ll notify you about VIP items & stock!\nMade by Mart John Labaco 💡`,
-    });
+    await sendMessage(id, { text: `👋 Hello ${name}!\nWelcome to Grow A Garden Bot 🌱\nI’ll notify you about VIP items & stock!\nMade by Mart John Labaco 💡` });
   }
 };
 
@@ -111,7 +104,7 @@ const handleCommand = async (id, text) => {
 
   if (command === '/help') {
     let msg = `🆘 Commands:\n/vip -list\n/vip #1,#2\n/vip -show\n/vip -delete #1,#2\n/vip -reset\n/stock -on\n/stock -off\n/stock`;
-    if (role === 'Admin') msg += `\n\n👑 Admin:\n/uptime\n/console -on\n/console -off`;
+    if (role === 'Admin') msg += `\n\n👑 Admin:\n/uptime\n/console -on\n/console -off\n/broadcast <msg>`;
     return sendMessage(id, { text: msg });
   }
 
@@ -132,9 +125,22 @@ const handleCommand = async (id, text) => {
     return sendMessage(id, { text: '🔇 Console logging is OFF.' });
   }
 
+  if (text.startsWith('/broadcast ')) {
+    if (role !== 'Admin') return sendMessage(id, { text: '⛔ Admins only.' });
+    const msg = text.slice('/broadcast '.length).trim();
+    if (!msg) return sendMessage(id, { text: '⚠️ Provide a message to broadcast.' });
+
+    let sent = 0;
+    for (const uid of Object.keys(db)) {
+      const ok = await sendMessage(uid, { text: `📢 Admin Broadcast:\n\n${msg}` });
+      if (ok) sent++;
+    }
+    return sendMessage(id, { text: `✅ Broadcast delivered to ${sent} users ✅` });
+  }
+
   if (command === '/vip -list') {
     const list = VIP_ITEMS.map((v, i) => `#${i + 1} ${v}`).join('\n');
-    return sendMessage(id, { text: `📋 VIP List:\n${list}\n\nUse /vip #1,#2 to select.` });
+    return sendMessage(id, { text: `📋 VIP List:\n${list}` });
   }
 
   if (command.startsWith('/vip #')) {
@@ -143,9 +149,7 @@ const handleCommand = async (id, text) => {
     if (selected.length) {
       vip[id] = selected;
       await saveJson(VIP_FILE, vip);
-      return sendMessage(id, {
-        text: `✅ VIP Set:\n${selected.map(n => `- ${itemEmojis[n] || ''} ${n}`).join('\n')}`
-      });
+      return sendMessage(id, { text: `✅ VIP Set:\n${selected.map(n => `- ${itemEmojis[n] || ''} ${n}`).join('\n')}` });
     } else return sendMessage(id, { text: '⚠️ Invalid.' });
   }
 
@@ -157,63 +161,27 @@ const handleCommand = async (id, text) => {
 
   if (command === '/vip -show') {
     const selected = vip[id];
-    if (!selected || selected.length === 0) {
-      await sendMessage(id, { text: '📭 You have no VIP items selected.' });
-    } else {
-      const listed = selected.map((item, i) => `#${i + 1} ${itemEmojis[item] || ''} ${item}`).join('\n');
-      await sendMessage(id, {
-        text: `📬 Your VIP Items:\n${listed}\n\nTo delete specific items, use:\n/vip -delete #1,#2`
-      });
-    }
-    return;
+    if (!selected || selected.length === 0) return sendMessage(id, { text: '📭 No VIP items selected.' });
+    const listed = selected.map((item, i) => `#${i + 1} ${itemEmojis[item] || ''} ${item}`).join('\n');
+    return sendMessage(id, { text: `📬 Your VIP Items:\n${listed}` });
   }
 
   if (command.startsWith('/vip -delete')) {
     const selected = vip[id];
-    if (!selected || selected.length === 0) {
-      await sendMessage(id, { text: '📭 You have no VIP items to delete.' });
-      return;
-    }
-
+    if (!selected || selected.length === 0) return sendMessage(id, { text: '📭 No VIP items to delete.' });
     const match = text.match(/#\d+/g);
     const indexes = match ? match.map(m => parseInt(m.slice(1)) - 1) : [];
     const filtered = selected.filter((_, i) => !indexes.includes(i));
-
-    if (filtered.length === selected.length) {
-      await sendMessage(id, { text: '⚠️ No matching items to delete.' });
-      return;
-    }
-
     vip[id] = filtered;
     await saveJson(VIP_FILE, vip);
-
     const updated = filtered.map((item, i) => `#${i + 1} ${itemEmojis[item] || ''} ${item}`).join('\n');
-    await sendMessage(id, {
-      text: `🗑️ Selected items removed.\n📬 Updated VIP Items:\n${updated || '📭 Empty'}`
-    });
-    return;
+    return sendMessage(id, { text: `🗑️ Updated VIP Items:\n${updated || '📭 Empty'}` });
   }
 
   if (command === '/stock -on') {
     notify[id] = true;
     await saveJson(STOCK_FILE, notify);
-    if (!lastStockDataRaw) return sendMessage(id, { text: '✅ Stock updates enabled.\n⏳ Waiting for stock data...' });
-
-    const s = lastStockDataRaw;
-    const sections = [
-      ['Gear', s.gear.items],
-      ['Seeds', s.seed.items],
-      ['Eggs', s.egg.items],
-      ['Honey', s.honey.items],
-      ['Cosmetics', s.cosmetics.items],
-    ];
-    const clean = sections.map(([t, l]) =>
-      `${t}\n${l.filter(i => i.quantity > 0).map(i => `- ${i.name}: x${formatQty(i.quantity)}`).join('\n')}`
-    ).join('\n\n');
-
-    return sendMessage(id, {
-      text: `✅ Stock updates enabled.\n\n📦 Current Stock\n\n${clean}\n\n📅 As of: ${getPHTime()}`
-    });
+    return sendMessage(id, { text: '✅ Stock updates enabled.' });
   }
 
   if (command === '/stock -off') {
@@ -250,10 +218,9 @@ const handleStockData = async (data) => {
   const db = await getJson(DATABASE_FILE);
   const vip = await getJson(VIP_FILE);
   const notify = await getJson(STOCK_FILE);
-
   const time = getPHTime();
-  const admins = Object.entries(db).filter(([_, u]) => u.role === 'Admin');
   const consoleEnabled = await getConsoleSetting();
+  const admins = Object.entries(db).filter(([_, u]) => u.role === 'Admin');
 
   let log = `📦 Stock Update @ ${time}\n`;
 
@@ -274,15 +241,12 @@ const handleStockData = async (data) => {
   const final = `🛠️ Gear:\n${gearMsg}\n\n🌱 Seeds:\n${seedMsg}\n📅 ${time}`;
 
   for (const id of Object.keys(notify)) await sendMessage(id, { text: final });
-  if (consoleEnabled) {
-    for (const [aid] of admins) await sendMessage(aid, { text: log });
-  }
+  if (consoleEnabled) for (const [aid] of admins) await sendMessage(aid, { text: log });
 };
 
 const connectWS = () => {
   const ws = new WebSocket(WS_URL);
   ws.on('open', async () => {
-    console.log(`[WS] Connected to ${WS_URL}`);
     const db = await getJson(DATABASE_FILE);
     const consoleEnabled = await getConsoleSetting();
     if (consoleEnabled) {
@@ -290,9 +254,7 @@ const connectWS = () => {
         if (user.role === 'Admin') {
           const now = new Date(new Date().toLocaleString('en-US', { timeZone: PH_TIMEZONE }));
           const part = now.getHours() < 12 ? 'Morning' : now.getHours() < 18 ? 'Afternoon' : 'Evening';
-          await sendMessage(id, {
-            text: `🤖 Bot online at ${now.toLocaleTimeString()}, ${now.toLocaleDateString()} (${part})`
-          });
+          await sendMessage(id, { text: `🤖 Bot online at ${now.toLocaleTimeString()}, ${now.toLocaleDateString()} (${part})` });
         }
       }
     }
